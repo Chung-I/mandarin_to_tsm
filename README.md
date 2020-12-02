@@ -35,3 +35,10 @@ then run allennlp serve:
 ```bash=
 allennlp serve --archive-path model.tar.gz  --predictor seq2seq --field-name source
 ```
+example of http posting:
+```
+curl --header "Content-Type: application/json" \
+  --request POST \
+  --data '{"source":"你好嗎"}' \
+  http://127.0.0.1:8000/predict
+```
