@@ -4,6 +4,8 @@ import gzip
 from pathlib import Path
 from collections import Counter
 from functools import partial
+import zhon.hanzi
+from tsm.sentence import Sentence
 
 arabic_chinese_mapping = {
     0: "零",
@@ -75,26 +77,16 @@ def read_gzip_file(gzip_file):
         raw_text = fp.read().decode('utf-8')
     return raw_text
 
-def parse_src_sent(sent, merge=True, char=False):
+def parse_src_sent(sent, level='char'):
     #sent = strip_puncts(sent).lower()
-    sent = sent.lower()
-    if merge:
-        sent = re.sub("[^\u4e00-\u9fa5A-Za-z0-9]", "", sent) 
-    else:
-        words = sent.split()
-        words = [re.sub("[^\u4e00-\u9fa5A-Za-z0-9]", "", word) for word in words]
-        if char:
-            sent = " ".join("".join(words))
-        else:
-            sent = " ".join(words)
-    return sent
+    words = [word for word in sent.lower().split()]
+    if level == 'char':
+        words = flatten([Sentence.parse_mixed_text(word) for word in words])
+    return words
 
 def parse_tgt_word(word, row=1, split=False):
     if row is not None:
-        try:
-            word = word.split("｜")[row]
-        except IndexError:
-            return [""]
+        word = word.split("｜")[row]
     else:
         try:
             return [re.match("(\w+\-)*\w｜(\w+\d\-)*\w+\d", word).group()]
@@ -114,13 +106,12 @@ def parse_tgt_word(word, row=1, split=False):
                 return ""
     return map(parse_tgt_syl, syls)
 
-def parse_tgt_sent(sent, row=-1, joint_taibun=False, split=True):
+def parse_tgt_sent(sent, row=-1, level='char'):
     sent = sent.lower()
-    row = None if joint_taibun else row
-    words = flatten([parse_tgt_word(word, row=row, split=split) for word in re.split("\s+", sent)])
-    words = filter(lambda word: word, words)
-    sent = " ".join(words)
-    return sent
+    words = [word.split("｜")[row] for word in sent.split()]
+    if level == 'char':
+        words = flatten([word.split("-") for word in words])
+    return words
 
 def write_lines_to_file(lines, text_file):
     with open(text_file, 'w') as fp:
@@ -133,20 +124,22 @@ def get_all_datas(input_dir, src_prefixes, tgt_prefixes):
     for src_prefix, tgt_prefix in zip(src_prefixes, tgt_prefixes):
         src_text = read_gzip_file(Path(input_dir).joinpath(f"{src_prefix}.txt.gz"))
         tgt_text = read_gzip_file(Path(input_dir).joinpath(f"{tgt_prefix}.txt.gz"))
-        src_sents += list(filter(lambda line: line, src_text.splitlines()))
-        tgt_sents += list(filter(lambda line: line, tgt_text.splitlines()))
+        prefix_src_sents, prefix_tgt_sents = \
+            list(zip(*filter(lambda pair: pair[0] and pair[1], zip(src_text.splitlines(), tgt_text.splitlines()))))
+        src_sents += prefix_src_sents
+        tgt_sents += prefix_tgt_sents
     assert len(src_sents) == len(tgt_sents)
     return src_sents, tgt_sents
 
 def main(args):
     src_sents, tgt_sents = get_all_datas(args.input_dir, args.src_prefixes, args.tgt_prefixes)
-    src_sents = list(map(partial(parse_src_sent, merge=not args.dont_merge, char=args.char_level), src_sents))
-    tgt_sents = list(map(partial(parse_tgt_sent, row=args.row, joint_taibun=args.joint_taibun, split=not args.dont_split), tgt_sents))
-    src_sents, tgt_sents = zip(*filter(lambda pair: pair[0].strip() and pair[1].strip(), zip(src_sents, tgt_sents)))
+    src_sents = list(map(partial(parse_src_sent, level=args.level), src_sents))
+    tgt_sents = list(map(partial(parse_tgt_sent, row=args.output_field, level=args.level), tgt_sents))
+    src_sents, tgt_sents = zip(*filter(lambda pair: pair[0] and pair[1], zip(src_sents, tgt_sents)))
     if args.vocab_path is not None:
-        counter = Counter(flatten(map(lambda sent: sent.split(), src_sents)))
+        counter = Counter(flatten(tgt_sents))
         write_lines_to_file([word for word, count in counter.most_common()], args.vocab_path)
-    write_lines_to_file(list(map(lambda x: f"{x[0]}|{x[1]}", zip(src_sents, tgt_sents))),
+    write_lines_to_file(list(map(lambda x: f"{' '.join(x[0])}|{' '.join(x[1])}", zip(src_sents, tgt_sents))),
                         f"{args.output_path}.txt")
 
 parser = argparse.ArgumentParser()
@@ -155,10 +148,7 @@ parser.add_argument('output_path')
 parser.add_argument('--src-prefixes', nargs='+')
 parser.add_argument('--tgt-prefixes', nargs='+')
 parser.add_argument('--vocab-path', type=str)
-parser.add_argument('--row', type=int)
-parser.add_argument('--dont-merge', action='store_true')
-parser.add_argument('--dont-split', action='store_true')
-parser.add_argument('--joint-taibun', action='store_true')
-parser.add_argument('--char-level', action='store_true')
+parser.add_argument('--output-field', type=int, choices=[0, 1])
+parser.add_argument('--level', type=str, choices=['char', 'word'])
 args = parser.parse_args()
 main(args)
